@@ -37,8 +37,7 @@ const USE_MOCK = true;   // ← false
 `mock.js` and `real.js` export the same functions with the same signatures, so
 no page changes. In dev, `real.js` calls `/api/...` and the Vite dev server
 proxies that to `http://localhost:8000` (see `vite.config.js`) — the browser
-only ever talks to one origin, so there is no CORS setup and session cookies
-just work.
+only ever talks to one origin, so there is no CORS setup to do.
 
 ## What the backend has to provide
 
@@ -80,9 +79,11 @@ Notes for whoever builds the API:
   skipping a state.
 - Errors return JSON with a `detail` (or `error`) field holding a message that
   is safe to show a user as-is.
-- Auth is currently written for Django **session auth**: cookies plus an
-  `X-CSRFToken` header on writes. Moving to token/JWT means editing one
-  function, `authHeaders` in `src/api/real.js`, and nothing else.
+- Auth is **token auth**. `login` and `register` must return the user *and* a
+  token — `{ id, username, role, token }`, or `{ key, user }`; `real.js` reads
+  either. Every later request carries `Authorization: Token <token>`, including
+  GETs. No cookies and no CSRF header. Moving to JWT means changing the word
+  `Token` to `Bearer` in `authHeaders` in `src/api/real.js`, and nothing else.
 
 ## Routes and roles
 

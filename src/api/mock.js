@@ -64,9 +64,9 @@ const USERS = [
 
 let orders = [];
 let nextOrderId = 41; // so the first order reads #042 — canteens don't start at 1
-/* The real API keeps the session in a cookie the browser hands back after a
-   refresh. The mock has no cookie, so it borrows sessionStorage — without it
-   every reload signs you out, which is not how the built app behaves.
+/* real.js survives a refresh by keeping its auth token in sessionStorage. The
+   mock has no token, so it parks the username there instead — without it every
+   reload signs you out, which is not how the built app behaves.
    ponytail: the username only, looked back up in USERS. Storing the whole
    user object would go stale the moment USERS changes. */
 const SESSION_KEY = 'canteen.session';

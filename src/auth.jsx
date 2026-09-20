@@ -6,7 +6,7 @@ import api from './api';
  *
  * The only place in the frontend that knows a session exists. Pages ask this
  * for `user` and never for a token, a cookie or a header — which is why
- * moving the backend from Django sessions to JWT changes `api/real.js` and
+ * moving the backend from session auth to tokens changed `api/real.js` and
  * nothing else, this file included.
  *
  * `user` is null when signed out, and `isLoading` is true only while the first
@@ -20,9 +20,9 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Ask the server who we are on boot. With session cookies the browser may
-  // already hold a valid session from a previous visit, and this is the only
-  // way to find out — the frontend cannot read an HttpOnly cookie.
+  // Ask the server who we are on boot. The tab may still be holding a token
+  // from earlier in the session, and asking is the only way to find out whether
+  // the server still honours it. getMe() answers null when it does not.
   useEffect(() => {
     let live = true;
     api

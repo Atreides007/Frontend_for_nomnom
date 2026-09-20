@@ -39,8 +39,10 @@
  * ─────────────────────────────────────────────────────────────────────────
  * CALLS
  *
- * login(username, password)  -> user      // also establishes the session
- * register(username, password) -> user    // registers as "student"
+ * login(username, password)  -> user      // response also carries the auth
+ *                                         // token; real.js keeps it and
+ *                                         // strips it before returning
+ * register(username, password) -> user    // registers as "student", same token
  * getMe()                    -> user | null   // null when not signed in
  * logout()                   -> void
  * getMenu()                  -> menuItem[]
