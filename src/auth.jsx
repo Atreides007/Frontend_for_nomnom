@@ -44,8 +44,8 @@ export function AuthProvider({ children }) {
     return me;
   }, []);
 
-  const signUp = useCallback(async (username, password) => {
-    const me = await api.register(username, password);
+  const signUp = useCallback(async (details) => {
+    const me = await api.register(details);
     setUser(me);
     return me;
   }, []);

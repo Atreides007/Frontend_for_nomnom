@@ -49,6 +49,25 @@ test('panList sorts by the oldest ticket waiting, not by quantity', () => {
   assert.equal(rows[0].waitMs, 8 * 60_000);
 });
 
+test('an ACCEPTED ticket is still work on the pan', () => {
+  // The state the backend added between PLACED and PREPARING. Nothing is
+  // cooking yet, so it belongs in the pan list exactly as PLACED does.
+  const rows = panList([order(1, 'ACCEPTED', 5, [dosa(2)])], NOW);
+  assert.deepEqual(
+    rows.map((r) => [r.name, r.qty]),
+    [['Masala Dosa', 2]],
+  );
+});
+
+test('ACCEPTED is counted in the New column, not lost between columns', () => {
+  const { counts, itemsToCook } = vitals(
+    [order(1, 'PLACED', 2, [chai(1)]), order(2, 'ACCEPTED', 3, [dosa(1)])],
+    NOW,
+  );
+  assert.equal(counts.PLACED, 2, 'both tickets are waiting to be cooked');
+  assert.equal(itemsToCook, 2);
+});
+
 test('vitals counts work in items, not in orders', () => {
   const v = vitals(
     [order(1, 'PLACED', 1, [dosa(2), chai(1)]), order(2, 'PREPARING', 2, [dosa(1)])],

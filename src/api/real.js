@@ -1,22 +1,25 @@
 /**
  * The real HTTP client. Not used until USE_MOCK in index.js is flipped to false.
  *
- * Token auth. login() and register() hand back a token, we keep it, and every
- * request from then on carries `Authorization: Token <token>`. No cookies and
- * no CSRF token: a cross-site form can make the browser send a cookie, but it
- * cannot make it send this header, so the attack CSRF exists to stop does not
- * apply here.
+ * Two jobs, and they are worth naming separately:
+ *
+ *   1. Talk to Django over HTTP with a token on every request.
+ *   2. TRANSLATE. The backend speaks its own vocabulary — category objects,
+ *      is_orderable, string prices, total_amount, menu_item/quantity/unit_price
+ *      — and the pages speak shapes.js. Every mapper below turns one into the
+ *      other. This file is the only place the two vocabularies meet.
+ *
+ * That second job is why the backend renaming a field, or adding a status,
+ * has never reached a component. Pages import from ./index, not from fetch.
  *
  * All requests go to /api, which the Vite dev server proxies to localhost:8000.
- *
- * Moving to JWT later means changing the word "Token" below to "Bearer" and
- * nothing else in the app. That is the whole reason every page imports from
- * ./index instead of calling fetch itself.
  */
+
+import { canCancel } from './shapes.js';
 
 const BASE = '/api';
 
-/* Where the token lives between reloads.
+/* Where the credential lives between reloads.
    sessionStorage rather than localStorage: it dies with the tab, which matches
    how the mock behaves and stops a shared lab machine staying signed in.
 
@@ -27,15 +30,36 @@ const BASE = '/api';
    Keeping it in sessionStorage keeps the blast radius to one tab. */
 const TOKEN_KEY = 'canteen.token';
 
-let token = globalThis.sessionStorage?.getItem(TOKEN_KEY) ?? null;
+/* The backend has no /auth/me/, so the only record of who is signed in is the
+   one we keep. Parked next to the token and thrown away with it, so the two
+   can never disagree about whether there is a session. */
+const USER_KEY = 'canteen.user';
 
-function setToken(value) {
-  token = value ?? null;
-  if (token) globalThis.sessionStorage?.setItem(TOKEN_KEY, token);
-  else globalThis.sessionStorage?.removeItem(TOKEN_KEY);
+let token = globalThis.sessionStorage?.getItem(TOKEN_KEY) ?? null;
+let user = readUser();
+
+function readUser() {
+  try {
+    return JSON.parse(globalThis.sessionStorage?.getItem(USER_KEY) ?? 'null');
+  } catch {
+    return null; // corrupted entry is the same as no session
+  }
 }
 
-/** On every request now, not just writes — the header IS the credential. */
+function setSession(nextToken, nextUser) {
+  token = nextToken ?? null;
+  user = nextUser ?? null;
+  const store = globalThis.sessionStorage;
+  if (!store) return;
+  if (token) store.setItem(TOKEN_KEY, token);
+  else store.removeItem(TOKEN_KEY);
+  if (user) store.setItem(USER_KEY, JSON.stringify(user));
+  else store.removeItem(USER_KEY);
+}
+
+/** On every request now, not just writes — the header IS the credential.
+ *  A cross-site form can make the browser send a cookie; it cannot make it
+ *  send this header, so the attack CSRF exists to stop does not apply. */
 function authHeaders() {
   return token ? { Authorization: `Token ${token}` } : {};
 }
@@ -63,78 +87,265 @@ async function request(path, { method = 'GET', body } = {}) {
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const error = new Error(payload?.detail || payload?.error || 'Something went wrong. Try again.');
-    error.status = response.status;
-    throw error;
+    // A 401 means the server has forgotten our token, so we forget it too —
+    // otherwise the app sits there looking signed in and failing every call.
+    if (response.status === 401) setSession(null, null);
+    throw httpError(payload, response.status);
   }
   return payload;
 }
 
 /**
+ * Turn a DRF error body into an Error a page can show.
+ *
+ * DRF puts the message in half a dozen places depending on whether it came
+ * from a serializer, a permission class or a raised APIException, and a
+ * student staring at "[object Object]" learns nothing. Worth the ten lines.
+ */
+export function httpError(payload, status) {
+  const first =
+    payload?.detail ??
+    payload?.error ??
+    payload?.message ??
+    // serializer errors: { roll_number: ["already exists"] }
+    (payload && typeof payload === 'object'
+      ? Object.values(payload).flat().find((v) => typeof v === 'string')
+      : null);
+
+  const error = new Error(first || 'Something went wrong. Try again.');
+  error.status = status;
+  // Which form field to point at, when the backend says.
+  if (payload && typeof payload === 'object') {
+    const field = Object.keys(payload).find((k) => !['detail', 'error', 'message'].includes(k));
+    if (field) error.field = field;
+    // Which cart row went out of stock. The spec promises the response says
+    // which item failed but not under what name, so we look for the obvious
+    // candidates rather than pick one and be silently wrong.
+    const itemId = payload.item_id ?? payload.menu_item ?? payload.menu_item_id;
+    if (typeof itemId === 'number') error.itemId = itemId;
+  }
+  return error;
+}
+
+/**
+ * DRF turns pagination on per-view, and a paginated list arrives as
+ * { count, next, results } instead of a bare array. Unwrapping both means the
+ * app does not break the day someone adds a page_size setting.
+ */
+export function unwrap(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.results)) return payload.results;
+  return [];
+}
+
+// ── translation ───────────────────────────────────────────────────────────
+//
+// The mappers below are exported only so the test beside this file can drive
+// them directly. Pages import the default from ./index and never see them.
+
+/** Django sends money as a string ("70.00") so it never loses a paisa to a
+ *  float. We render with our own formatter, which wants a number. */
+const money = (value) => Number(value ?? 0);
+
+function toCounter(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'number') return { id: raw, name: 'Main Kitchen' };
+  return { id: raw.id, name: raw.name ?? 'Main Kitchen' };
+}
+
+export function toMenuItem(raw) {
+  return {
+    id: raw.id,
+    name: raw.name,
+    description: raw.description ?? '',
+    price: money(raw.price),
+    // category arrives as { id, name, display_order }; pages group on a string.
+    category: raw.category?.name ?? raw.category ?? 'Other',
+    // Two separate backend flags. is_available is "do we stock it at all",
+    // is_orderable is "can it be ordered right now" — the second is the one
+    // that should grey out the Add button, so it is the one we map.
+    available: raw.is_orderable ?? raw.is_available ?? true,
+    image: raw.image ?? null,
+    counter: toCounter(raw.counter ?? raw.counter_id),
+  };
+}
+
+/**
+ * One line of an order.
+ *
+ * `menu_item` is the field the backend team named but did not pin down: it may
+ * be a nested object, a plain name, or a bare id. All three are handled,
+ * because the failure mode of guessing wrong is a receipt that reads
+ * "[object Object]" and nobody noticing until the viva.
+ * ponytail: a bare id has no name to show, so it degrades to "Item #12"
+ * rather than blank — replace with a real lookup if the backend keeps sending ids.
+ */
+export function toOrderItem(raw) {
+  const source = raw.menu_item ?? raw.item ?? raw;
+  const name =
+    typeof source === 'string'
+      ? source
+      : (source?.name ?? raw.name ?? (typeof source === 'number' ? `Item #${source}` : 'Item'));
+
+  return {
+    name,
+    qty: raw.quantity ?? raw.qty ?? 1,
+    price: money(raw.unit_price ?? raw.price ?? source?.price),
+  };
+}
+
+export function toOrder(raw) {
+  return {
+    id: raw.id,
+    status: raw.status,
+    total: money(raw.total_amount ?? raw.total),
+    created_at: raw.created_at ?? raw.created ?? new Date().toISOString(),
+    counter: toCounter(raw.counter),
+    items: (raw.items ?? raw.order_items ?? []).map(toOrderItem),
+  };
+}
+
+// ── auth ──────────────────────────────────────────────────────────────────
+
+/**
  * Take a sign-in response, keep the token, hand back the plain `user` the rest
  * of the app is written against.
  *
- * Deliberately tolerant about where the token sits, because that envelope is
- * the one thing the backend has not pinned down: DRF's own view returns
- * { token }, dj-rest-auth returns { key }, and a custom serializer usually
- * nests the user under { user }. Reading all three costs two `??` and saves a
- * day of waiting on an answer.
+ * The backend sends { token, role, user_id } and no username — so we use the
+ * one the student just typed. It is the same string that authenticated, and a
+ * round-trip to fetch it back would be a request to learn something we already
+ * know. Tolerant about where the token sits because that envelope still is not
+ * pinned down: DRF's own view returns { token }, dj-rest-auth returns { key }.
  *
- * The two throws are the point of this function. Without them a backend that
- * forgets the token produces a sign-in that "works" and then 401s on the very
- * next call, which is a miserable thing to debug on integration day.
+ * The two throws are the point of this function. `token` is on every later
+ * request and `role` decides which home page you land on — a missing role
+ * would quietly send a student to the kitchen board. Better to fail at sign-in
+ * than to half-succeed and be debugged on integration day.
  *
  * Exported for the test beside this file; nothing else should call it.
  */
-export function adopt(payload) {
+export function adopt(payload, username) {
   const key = payload?.token ?? payload?.key ?? payload?.auth_token;
   if (!key) throw new Error('Signed in, but the server did not send a token.');
 
-  const user = payload.user ?? payload;
-  if (user?.username == null) throw new Error('The server sent a sign-in response we did not understand.');
+  const nested = payload.user ?? payload;
+  const role = payload.role ?? nested?.role;
+  if (!role) throw new Error('Signed in, but the server did not say what kind of account this is.');
 
-  setToken(key);
+  const me = {
+    id: payload.user_id ?? nested?.id ?? null,
+    username: username ?? nested?.username ?? '',
+    role,
+  };
+  setSession(key, me);
   // Only the three fields shapes.js promises. The token deliberately does not
   // travel on into React state — one copy, in one place.
-  return { id: user.id, username: user.username, role: user.role };
+  return me;
 }
 
 export const login = async (username, password) =>
-  adopt(await request('/auth/login/', { method: 'POST', body: { username, password } }));
+  adopt(await request('/auth/login/', { method: 'POST', body: { username, password } }), username);
 
-export const register = async (username, password) =>
-  adopt(await request('/auth/register/', { method: 'POST', body: { username, password } }));
+/**
+ * The backend registers and logs in as two separate steps by design — the
+ * register response carries no token — so we do both and the page never knows.
+ * details: { username, password, roll_number, email, phone_number }
+ */
+export async function register(details) {
+  await request('/auth/register/', { method: 'POST', body: details });
+  return login(details.username, details.password);
+}
 
-/** No token, no question to ask — and no pointless 401 on every first visit.
- *  A 401 with a token means the server has forgotten it, so we forget it too. */
-export const getMe = () => {
-  if (!token) return Promise.resolve(null);
-  return request('/auth/me/').catch((e) => {
-    if (e.status !== 401) throw e;
-    setToken(null);
-    return null;
-  });
-};
+/**
+ * There is no /auth/me/ on the backend, so there is nothing to ask.
+ *
+ * We trust the session we stored until a request comes back 401, at which
+ * point request() clears it. That is the same guarantee /auth/me/ would give
+ * — a stale token is discovered on first use either way — minus one round
+ * trip on every page load.
+ * ponytail: swap in a real /auth/me/ call here if the backend adds one.
+ */
+export const getMe = () => Promise.resolve(user);
 
+/** No /auth/logout/ either. The token is gone from this browser, which is what
+ *  signing out means here; the server can expire its own copy. */
 export const logout = async () => {
-  try {
-    await request('/auth/logout/', { method: 'POST' });
-  } catch {
-    // ponytail: a failed logout call still signs you out here. The token is
-    // gone from this browser either way and the server can expire its own copy
-    // — leaving someone apparently signed in because the network blipped is
-    // the worse failure.
-  }
-  setToken(null);
+  setSession(null, null);
 };
 
-export const getMenu = () => request('/menu/');
+// ── menu ──────────────────────────────────────────────────────────────────
 
-export const placeOrder = (items) => request('/orders/', { method: 'POST', body: { items } });
+/**
+ * One request, not two. The items endpoint nests the whole category object —
+ * including display_order — so /menu/categories/ would only tell us what we
+ * are already holding. Sorting here means Menu.jsx groups in the canteen's
+ * own order without knowing that display_order exists.
+ */
+export async function getMenu() {
+  const items = unwrap(await request('/menu/items/')).map((raw) => ({
+    raw,
+    item: toMenuItem(raw),
+  }));
 
-export const getOrders = () => request('/orders/');
+  items.sort(
+    (a, b) =>
+      (a.raw.category?.display_order ?? 0) - (b.raw.category?.display_order ?? 0) ||
+      a.item.name.localeCompare(b.item.name),
+  );
+  return items.map((entry) => entry.item);
+}
 
-export const getOrder = (id) => request(`/orders/${id}/`);
+// ── orders ────────────────────────────────────────────────────────────────
+
+/**
+ * items: [{ id, qty }] — menuItem ids.
+ * opts:  { counterId, idempotencyKey }
+ *
+ * The idempotency key is generated by the cart page, not here, and that is
+ * deliberate: it has to survive a failed attempt and be reused on retry, so it
+ * belongs to the checkout the student is in the middle of, not to one call.
+ */
+export const placeOrder = (items, { counterId, idempotencyKey } = {}) =>
+  request('/orders/', {
+    method: 'POST',
+    body: {
+      counter: counterId,
+      idempotency_key: idempotencyKey,
+      items: items.map(({ id, qty }) => ({ menu_item: id, quantity: qty })),
+    },
+  }).then(toOrder);
+
+/**
+ * Students get their own orders; the backend scopes that itself.
+ *
+ * Staff get the board, which needs an explicit filter — without it a busy
+ * lunch service would ship every completed order of the day to a screen that
+ * only ever draws three columns.
+ */
+export async function getOrders() {
+  const query = user && user.role !== 'student' ? '?status=PLACED,ACCEPTED,PREPARING' : '';
+  return unwrap(await request(`/orders/${query}`)).map(toOrder);
+}
+
+export const getOrder = (id) => request(`/orders/${id}/`).then(toOrder);
 
 export const setStatus = (id, status) =>
-  request(`/orders/${id}/status/`, { method: 'PATCH', body: { status } });
+  request(`/orders/${id}/status/`, { method: 'PATCH', body: { status } }).then(toOrder);
+
+/**
+ * Cancel is a DELETE, but the order is not deleted — it comes back CANCELLED.
+ * Checking here as well as in the UI because the button being hidden is a
+ * courtesy, not a guarantee: a stale page can still hold a cancel button for
+ * an order the kitchen accepted two seconds ago.
+ */
+export async function cancelOrder(id) {
+  const current = await getOrder(id);
+  if (!canCancel(current.status)) {
+    const error = new Error('The kitchen has already started this order.');
+    error.status = 409;
+    throw error;
+  }
+  const payload = await request(`/orders/${id}/`, { method: 'DELETE' });
+  // A 204 means it worked but says nothing; re-read so the page gets an order.
+  return payload ? toOrder(payload) : getOrder(id);
+}

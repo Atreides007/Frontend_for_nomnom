@@ -21,6 +21,8 @@ import { useCallback, useEffect, useState } from 'react';
  *
  * `fetcher` must be stable across renders — pass a module-scope function or
  * one wrapped in useCallback, or the effect restarts on every render.
+ *
+ * Pass 0 as the interval to fetch once and stop.
  */
 export function usePoll(fetcher, intervalMs) {
   const [data, setData] = useState(null);
@@ -43,7 +45,9 @@ export function usePoll(fetcher, intervalMs) {
       }
       if (!live) return;
       setIsLoading(false);
-      timer = setTimeout(tick, intervalMs);
+      // A falsy interval means "fetch once, then stop" — how a caller switches
+      // polling off when the thing being watched can no longer change.
+      if (intervalMs) timer = setTimeout(tick, intervalMs);
     }
 
     tick();

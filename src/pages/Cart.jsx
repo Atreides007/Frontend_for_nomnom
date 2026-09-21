@@ -18,6 +18,7 @@ export default function Cart() {
   const [placed, setPlaced] = useState(null); // the order, once it exists
   const [error, setError] = useState(null);
   const [isSending, setIsSending] = useState(false);
+  const [blockedId, setBlockedId] = useState(null); // the one dish that ran out
 
   useEffect(() => {
     let live = true;
@@ -33,17 +34,37 @@ export default function Cart() {
   async function placeOrder() {
     setIsSending(true);
     setError(null);
+    setBlockedId(null);
     try {
-      const order = await api.placeOrder(cart.lines);
+      // Every dish on the menu names the window that cooks it; the backend
+      // wants one order per window, so the first line decides for all of them.
+      // With a single counter today this is always the same id.
+      const counterId = menu.find((m) => m.id === cart.lines[0]?.id)?.counter?.id;
+
+      const order = await api.placeOrder(cart.lines, {
+        counterId,
+        idempotencyKey: cart.orderKey,
+      });
       // Only clear once the server has the order. Clearing optimistically and
       // then failing would leave someone with no cart and no order.
       cart.clear();
       setPlaced(order);
     } catch (err) {
       setError(err.message);
+      // The backend names the dish that ran out. Point at that row and leave
+      // the rest of the basket alone — nobody wants to rebuild five lines
+      // because the samosas went.
+      setBlockedId(err.itemId ?? null);
     } finally {
       setIsSending(false);
     }
+  }
+
+  /** Any edit clears the complaint; the next attempt will say so again if it stands. */
+  function setQty(id, qty) {
+    cart.setQty(id, qty);
+    setError(null);
+    setBlockedId(null);
   }
 
   if (placed) return <Receipt order={placed} />;
@@ -79,13 +100,16 @@ export default function Cart() {
         <>
           <ul className="lines panel">
             {rows.map((row) => (
-              <li key={row.id} className="line">
+              <li
+                key={row.id}
+                className={`line${row.id === blockedId ? ' line--blocked' : ''}`}
+              >
                 <span className="line__name">{row.item.name}</span>
                 <span className="line__price num">{rupees(row.item.price * row.qty)}</span>
                 <Stepper
                   qty={row.qty}
                   label={row.item.name}
-                  onChange={(next) => cart.setQty(row.id, next)}
+                  onChange={(next) => setQty(row.id, next)}
                 />
               </li>
             ))}

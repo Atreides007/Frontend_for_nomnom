@@ -69,6 +69,20 @@
   justify-self: start;
 }
 
+/* The one dish the kitchen ran out of. Tinted rather than struck through:
+   the row is still editable, and lowering the quantity may well fix it. */
+.line--blocked {
+  background: rgba(224, 112, 90, 0.1);
+  box-shadow: inset 3px 0 0 var(--signal-late);
+  margin-inline: calc(var(--s4) * -1);
+  padding-inline: var(--s4);
+  border-radius: var(--r-control);
+}
+
+.line--blocked .line__name {
+  color: var(--signal-late);
+}
+
 .line--total .line__name,
 .line--total .line__price {
   font-size: var(--t-price);

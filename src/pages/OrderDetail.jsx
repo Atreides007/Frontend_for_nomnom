@@ -1,7 +1,7 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import api from '../api';
-import { STATUS_LABELS, STATUSES } from '../api/shapes';
+import { STATUS_LABELS, STATUSES, canCancel, isFinished } from '../api/shapes';
 import { usePoll } from '../hooks/usePoll';
 import { rupees } from '../lib/money';
 import { token } from '../lib/token';
@@ -13,9 +13,11 @@ const POLL_MS = 5000;
  *  The status word above is the state; this is the instruction. */
 const ADVICE = {
   PLACED: 'Show this token at the counter and pay when you collect.',
+  ACCEPTED: 'The kitchen has your order. Cooking starts shortly.',
   PREPARING: 'Being cooked now. Show this token at the counter.',
   READY: 'Ready — collect it at the counter and pay there.',
-  COLLECTED: 'Collected. Thanks!',
+  COMPLETED: 'Collected. Thanks!',
+  CANCELLED: 'This order was cancelled. Nothing to pay.',
 };
 
 /**
@@ -29,7 +31,37 @@ export default function OrderDetail() {
   // usePoll restarts its loop whenever the fetcher changes, so this has to be
   // stable — it may only be rebuilt when the id in the URL actually changes.
   const fetchOrder = useCallback(() => api.getOrder(id), [id]);
-  const { data: order, error, isLoading } = usePoll(fetchOrder, POLL_MS);
+  const [pollMs, setPollMs] = useState(POLL_MS);
+  const { data: order, error, isLoading, patch } = usePoll(fetchOrder, pollMs);
+
+  // A collected or cancelled order will never change again, so stop asking.
+  // Without this a phone left on this screen keeps waking the server every
+  // five seconds until the battery gives up.
+  useEffect(() => {
+    setPollMs(order && isFinished(order.status) ? 0 : POLL_MS);
+  }, [order]);
+
+  // Cancelling cannot be undone, so the button asks twice. A plain confirm()
+  // would do the same job, but it blocks the page and reads like an error.
+  const [isArmed, setIsArmed] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
+
+  async function cancel() {
+    setIsCancelling(true);
+    setCancelError(null);
+    try {
+      // patch shows the cancelled order at once instead of leaving the student
+      // looking at a stale "Placed" until the next poll comes round.
+      patch(await api.cancelOrder(order.id));
+    } catch (failure) {
+      // Most likely the kitchen accepted it a second before the tap landed.
+      setCancelError(failure.message);
+      setIsArmed(false);
+    } finally {
+      setIsCancelling(false);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -94,18 +126,46 @@ export default function OrderDetail() {
       </ul>
 
       <p className="order__terms">{ADVICE[order.status]}</p>
+
+      {canCancel(order.status) && (
+        <>
+          {cancelError && (
+            <p className="order__error" role="alert">
+              {cancelError}
+            </p>
+          )}
+          <button
+            type="button"
+            className={`order__cancel${isArmed ? ' is-armed' : ''}`}
+            onClick={() => (isArmed ? cancel() : setIsArmed(true))}
+            disabled={isCancelling}
+          >
+            {isCancelling ? 'Cancelling…' : isArmed ? 'Tap again to cancel' : 'Cancel this order'}
+          </button>
+        </>
+      )}
     </main>
   );
 }
 
 /**
- * The four states as a row of steps, with everything up to and including the
+ * The five states as a row of steps, with everything up to and including the
  * current one filled. A student wants "how far along is my food", and a list
  * of steps answers that in one look — a single word does not say what comes
  * next or what has already happened.
  */
 function Track({ status }) {
   const reached = STATUSES.indexOf(status);
+
+  // CANCELLED is not a point on the line, it is a way off it, so drawing it as
+  // a step would be a lie — there is no progress to show. One flat bar instead.
+  if (status === 'CANCELLED') {
+    return (
+      <p className="track track--void" role="status">
+        {STATUS_LABELS.CANCELLED}
+      </p>
+    );
+  }
 
   return (
     <ol className="track" aria-label={`Status: ${STATUS_LABELS[status]}`}>

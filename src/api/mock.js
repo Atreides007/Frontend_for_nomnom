@@ -6,7 +6,7 @@
  * State lives in module scope, so it survives navigation but resets on reload.
  */
 
-import { STATUSES, nextStatus } from './shapes';
+import { STATUSES, canCancel, nextStatus } from './shapes.js';
 
 // ── plumbing ──────────────────────────────────────────────────────────────
 
@@ -23,39 +23,52 @@ async function reply(value) {
   return structuredClone(value);
 }
 
-async function fail(message, status = 400) {
+async function fail(message, status = 400, extra) {
   await sleep(latency());
   const error = new Error(message);
   error.status = status;
+  // e.g. { itemId } so the cart can point at the row that went out of stock
+  // instead of throwing the whole basket away.
+  if (extra) Object.assign(error, extra);
   throw error;
 }
 
 // ── seed data ─────────────────────────────────────────────────────────────
 
+/* Every dish belongs to a window. The backend models this properly and only
+   allows one counter per order; today it ships with exactly one, so the guard
+   in placeOrder is inert until a second one appears. Seeding a second counter
+   here would be inventing data the backend does not have.
+   ponytail: one counter, add more rows when the backend grows them. */
+const COUNTERS = [{ id: 1, name: 'Main Kitchen' }];
+const MAIN = COUNTERS[0];
+
 const MENU = [
-  { id: 1, name: 'Masala Dosa', description: 'Crisp rice crêpe, potato masala, coconut chutney', price: 60, category: 'South Indian', available: true },
-  { id: 2, name: 'Idli Sambar', description: 'Two steamed idlis in hot sambar', price: 40, category: 'South Indian', available: true },
-  { id: 3, name: 'Medu Vada', description: 'Two lentil doughnuts, coconut chutney', price: 35, category: 'South Indian', available: true },
-  { id: 4, name: 'Poha', description: 'Flattened rice, peanuts, curry leaves', price: 30, category: 'South Indian', available: true },
+  { id: 1, name: 'Masala Dosa', description: 'Crisp rice crêpe, potato masala, coconut chutney', price: 60, category: 'South Indian', available: true, image: null, counter: MAIN },
+  { id: 2, name: 'Idli Sambar', description: 'Two steamed idlis in hot sambar', price: 40, category: 'South Indian', available: true, image: null, counter: MAIN },
+  { id: 3, name: 'Medu Vada', description: 'Two lentil doughnuts, coconut chutney', price: 35, category: 'South Indian', available: true, image: null, counter: MAIN },
+  { id: 4, name: 'Poha', description: 'Flattened rice, peanuts, curry leaves', price: 30, category: 'South Indian', available: true, image: null, counter: MAIN },
 
-  { id: 10, name: 'Veg Thali', description: 'Dal, sabzi, rice, four rotis, salad, pickle', price: 90, category: 'Meals', available: true },
-  { id: 11, name: 'Rajma Chawal', description: 'Kidney bean curry over steamed rice', price: 70, category: 'Meals', available: true },
-  { id: 12, name: 'Chole Bhature', description: 'Spiced chickpeas, two fried bhature', price: 80, category: 'Meals', available: true },
-  { id: 13, name: 'Paneer Butter Masala', description: 'With two butter rotis', price: 110, category: 'Meals', available: true },
+  { id: 10, name: 'Veg Thali', description: 'Dal, sabzi, rice, four rotis, salad, pickle', price: 90, category: 'Meals', available: true, image: null, counter: MAIN },
+  { id: 11, name: 'Rajma Chawal', description: 'Kidney bean curry over steamed rice', price: 70, category: 'Meals', available: true, image: null, counter: MAIN },
+  { id: 12, name: 'Chole Bhature', description: 'Spiced chickpeas, two fried bhature', price: 80, category: 'Meals', available: true, image: null, counter: MAIN },
+  { id: 13, name: 'Paneer Butter Masala', description: 'With two butter rotis', price: 110, category: 'Meals', available: true, image: null, counter: MAIN },
 
-  { id: 20, name: 'Veg Sandwich', description: 'Grilled, mint chutney, three layers', price: 45, category: 'Snacks', available: true },
-  { id: 21, name: 'Samosa', description: 'Two, with tamarind and mint chutney', price: 25, category: 'Snacks', available: true },
-  { id: 22, name: 'Pav Bhaji', description: 'Buttered pav, mashed vegetable bhaji', price: 65, category: 'Snacks', available: true },
-  { id: 23, name: 'Maggi', description: 'Masala, with extra vegetables', price: 40, category: 'Snacks', available: true },
+  { id: 20, name: 'Veg Sandwich', description: 'Grilled, mint chutney, three layers', price: 45, category: 'Snacks', available: true, image: null, counter: MAIN },
+  { id: 21, name: 'Samosa', description: 'Two, with tamarind and mint chutney', price: 25, category: 'Snacks', available: true, image: null, counter: MAIN },
+  { id: 22, name: 'Pav Bhaji', description: 'Buttered pav, mashed vegetable bhaji', price: 65, category: 'Snacks', available: true, image: null, counter: MAIN },
+  { id: 23, name: 'Maggi', description: 'Masala, with extra vegetables', price: 40, category: 'Snacks', available: true, image: null, counter: MAIN },
 
-  { id: 30, name: 'Masala Chai', description: 'Ginger and cardamom', price: 15, category: 'Drinks', available: true },
-  { id: 31, name: 'Filter Coffee', description: 'Strong, in a steel tumbler', price: 20, category: 'Drinks', available: true },
-  { id: 32, name: 'Fresh Lime Soda', description: 'Sweet, salted, or mixed', price: 30, category: 'Drinks', available: true },
-  { id: 33, name: 'Cold Coffee', description: 'Blended, with ice cream', price: 50, category: 'Drinks', available: true },
+  { id: 30, name: 'Masala Chai', description: 'Ginger and cardamom', price: 15, category: 'Drinks', available: true, image: null, counter: MAIN },
+  { id: 31, name: 'Filter Coffee', description: 'Strong, in a steel tumbler', price: 20, category: 'Drinks', available: true, image: null, counter: MAIN },
+  { id: 32, name: 'Fresh Lime Soda', description: 'Sweet, salted, or mixed', price: 30, category: 'Drinks', available: true, image: null, counter: MAIN },
+  { id: 33, name: 'Cold Coffee', description: 'Blended, with ice cream', price: 50, category: 'Drinks', available: true, image: null, counter: MAIN },
 ];
 
 const USERS = [
-  { id: 1, username: 'student', password: 'student', role: 'student' },
+  // The roll number is here so the duplicate-registration path can actually
+  // be shown: register with 21CS001 and the form points at that box.
+  { id: 1, username: 'student', password: 'student', role: 'student', roll_number: '21CS001' },
   { id: 2, username: 'kitchen', password: 'kitchen', role: 'staff' },
   { id: 3, username: 'manager', password: 'manager', role: 'manager' },
 ];
@@ -83,7 +96,7 @@ function setSession(user) {
  *  never show up in the real signed-in student's "My Orders". */
 const PHANTOM_USER_ID = 99;
 
-function makeOrder({ userId, items, createdAt = new Date(), status = 'PLACED' }) {
+function makeOrder({ userId, items, createdAt = new Date(), status = 'PLACED', counter = MAIN }) {
   const total = items.reduce((sum, i) => sum + i.price * i.qty, 0);
   return {
     id: nextOrderId++,
@@ -91,6 +104,7 @@ function makeOrder({ userId, items, createdAt = new Date(), status = 'PLACED' })
     status,
     total,
     created_at: createdAt.toISOString(),
+    counter,
     items,
   };
 }
@@ -104,7 +118,7 @@ function makeOrder({ userId, items, createdAt = new Date(), status = 'PLACED' })
   };
   const seeds = [
     { mins: 14, status: 'PREPARING', items: [pick(10, 1), pick(30, 2)] },
-    { mins: 9, status: 'PLACED', items: [pick(1, 2), pick(31, 1)] },
+    { mins: 9, status: 'ACCEPTED', items: [pick(1, 2), pick(31, 1)] },
     { mins: 6, status: 'READY', items: [pick(21, 3)] },
     { mins: 2, status: 'PLACED', items: [pick(12, 1), pick(32, 1), pick(23, 1)] },
   ];
@@ -153,11 +167,16 @@ export async function login(username, password) {
   return reply(publicUser(found));
 }
 
-export async function register(username, password) {
+/** details: { username, password, roll_number?, email?, phone_number? }.
+ *  Always creates a student — there is no way to sign up as staff. */
+export async function register({ username, password, roll_number } = {}) {
   if (!username || username.length < 3) return fail('Pick a username of at least 3 characters.');
   if (!password || password.length < 4) return fail('Pick a password of at least 4 characters.');
   if (USERS.some((u) => u.username === username)) return fail('That username is taken.', 409);
-  const created = { id: USERS.length + 1, username, password, role: 'student' };
+  if (roll_number && USERS.some((u) => u.roll_number === roll_number)) {
+    return fail('That roll number is already registered.', 409, { field: 'roll_number' });
+  }
+  const created = { id: USERS.length + 1, username, password, roll_number, role: 'student' };
   USERS.push(created);
   setSession(created);
   return reply(publicUser(created));
@@ -176,22 +195,64 @@ export async function getMenu() {
   return reply(MENU);
 }
 
-/** items: [{ id, qty }] using menuItem ids. */
-export async function placeOrder(items) {
+/* Orders already accepted, keyed by the cart's idempotency key. The backend
+   requires one per order; the point is that a student who taps Place Order
+   twice, or retries after the wifi drops mid-request, gets the SAME order back
+   rather than two lots of lunch. Mirrored here so the behaviour is
+   demonstrable without a server running. */
+const placedByKey = new Map();
+
+/**
+ * items: [{ id, qty }] using menuItem ids.
+ * opts:  { counterId, idempotencyKey } — both required by the real backend.
+ */
+export async function placeOrder(items, { counterId, idempotencyKey } = {}) {
   if (!session) return fail('Sign in to place an order.', 401);
   if (!Array.isArray(items) || items.length === 0) return fail('Your cart is empty.');
+
+  if (idempotencyKey && placedByKey.has(idempotencyKey)) {
+    return reply(strip(placedByKey.get(idempotencyKey)));
+  }
 
   const lines = [];
   for (const { id, qty } of items) {
     const item = MENU.find((m) => m.id === id);
-    if (!item) return fail('Something in your cart is no longer on the menu.');
-    if (!item.available) return fail(`${item.name} just went off the menu. Remove it to continue.`);
+    if (!item) return fail('Something in your cart is no longer on the menu.', 400, { itemId: id });
+    if (!item.available) {
+      return fail(`${item.name} just went off the menu.`, 409, { itemId: id });
+    }
     if (!Number.isInteger(qty) || qty < 1) return fail('Quantities must be whole numbers of at least 1.');
     lines.push({ name: item.name, qty, price: item.price });
   }
 
-  const order = makeOrder({ userId: session.id, items: lines });
+  // One counter per order. Inert while the canteen has a single window, but
+  // it is the backend's rule, so the mock enforces it too — otherwise the
+  // demo would happily do something the real server rejects.
+  const counters = new Set(items.map((line) => MENU.find((m) => m.id === line.id)?.counter.id));
+  if (counters.size > 1) {
+    return fail('An order can only come from one counter. Split it into two orders.', 400);
+  }
+  const counter = COUNTERS.find((c) => c.id === (counterId ?? [...counters][0])) ?? MAIN;
+
+  const order = makeOrder({ userId: session.id, items: lines, counter });
   orders.push(order);
+  if (idempotencyKey) placedByKey.set(idempotencyKey, order);
+  return reply(strip(order));
+}
+
+/** A student calling off their own order. PLACED only — once the kitchen has
+ *  accepted it, someone is already holding a pan. */
+export async function cancelOrder(id) {
+  if (!session) return fail('Sign in to cancel an order.', 401);
+  const order = orders.find((o) => o.id === Number(id));
+  if (!order) return fail('That order does not exist.', 404);
+  if (session.role === 'student' && order.user_id !== session.id) {
+    return fail('That order does not exist.', 404);
+  }
+  if (!canCancel(order.status)) {
+    return fail('The kitchen has already started this order.', 409);
+  }
+  order.status = 'CANCELLED';
   return reply(strip(order));
 }
 
@@ -216,7 +277,7 @@ export async function getOrders() {
     return reply(mine.slice().reverse().map(strip));
   }
   startGenerator();
-  const active = orders.filter((o) => o.status !== 'COLLECTED');
+  const active = orders.filter((o) => o.status !== 'COMPLETED' && o.status !== 'CANCELLED');
   return reply(active.map(strip));
 }
 
@@ -252,6 +313,6 @@ function publicUser({ id, username, role }) {
 
 /** Drop mock-only fields so pages can never depend on something the real
  *  backend won't send. */
-function strip({ id, status, total, created_at, items }) {
-  return { id, status, total, created_at, items };
+function strip({ id, status, total, created_at, counter, items }) {
+  return { id, status, total, created_at, counter, items };
 }

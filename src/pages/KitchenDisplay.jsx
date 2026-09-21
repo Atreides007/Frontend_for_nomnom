@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import api from '../api';
-import { BOARD_COLUMNS, nextStatus, STATUS_LABELS } from '../api/shapes';
+import { BOARD_COLUMNS, columnFor, nextStatus, STATUS_LABELS } from '../api/shapes';
 import { useAuth } from '../auth';
 import Icon from '../components/Icon';
 import PanList from '../components/PanList';
@@ -28,10 +28,14 @@ const POLL_MS = 4000;
 // the ticket is, so the button only has to say where it is going.
 const ADVANCE_LABEL = {
   PLACED: 'Start cooking',
+  // ACCEPTED sits in the New column, so the cook sees no difference; the tap
+  // just moves it one further along than a PLACED ticket would go.
+  ACCEPTED: 'Start cooking',
   PREPARING: 'Mark ready',
   READY: 'Collected',
 };
 
+/** Keyed by COLUMN, not status — the chip says which pile, not which flag. */
 const SHORT = { PLACED: 'New', PREPARING: 'Preparing', READY: 'Ready' };
 
 const TABS = ['ALL', ...BOARD_COLUMNS];
@@ -100,7 +104,9 @@ export default function KitchenDisplay() {
 
   const live = orders ?? [];
   const shown = live
-    .filter((order) => tab === 'ALL' || order.status === tab)
+    // By column: the New tab holds PLACED and ACCEPTED alike, because to the
+    // person at the pass they are the same pile of work.
+    .filter((order) => tab === 'ALL' || columnFor(order.status) === tab)
     // Oldest first, whichever tab is open: that is the order they get cooked.
     .slice()
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
@@ -163,7 +169,9 @@ export default function KitchenDisplay() {
             <div className="tabs">
               {TABS.map((key) => {
                 const count =
-                  key === 'ALL' ? live.length : live.filter((o) => o.status === key).length;
+                  key === 'ALL'
+                    ? live.length
+                    : live.filter((o) => columnFor(o.status) === key).length;
                 return (
                   <button
                     key={key}
@@ -221,12 +229,15 @@ function Ticket({ order, now, isPending, onAdvance }) {
   const num = token(order.id);
   const dishes = order.items.reduce((sum, item) => sum + item.qty, 0);
   const action = ADVANCE_LABEL[order.status];
+  // The chip names the pile the ticket is in. ACCEPTED and PLACED both read
+  // "New" — the extra state is the backend's bookkeeping, not the cook's.
+  const column = columnFor(order.status);
 
   return (
     <article className={`card${late ? ' card--late' : ''}${isPending ? ' card--pending' : ''}`}>
       <header className="card__top">
         <span className="card__token num">#{num}</span>
-        <span className={`chip chip--${order.status.toLowerCase()}`}>{SHORT[order.status]}</span>
+        <span className={`chip chip--${column.toLowerCase()}`}>{SHORT[column]}</span>
       </header>
 
       <p className="card__meta">

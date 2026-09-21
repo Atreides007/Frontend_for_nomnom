@@ -14,6 +14,11 @@
   position: relative;
   min-height: 100dvh;
   display: flex;
+  /* The lamp is 130% wide on purpose, so on a phone it hangs past both edges
+     and the page grows a sideways scrollbar for a blur nobody can look at.
+     `clip` rather than `hidden`: hidden on one axis forces `auto` on the
+     other, which would put a second scrollbar on the paper. */
+  overflow-x: clip;
   /* Lamp above, shadow on the floor. Nothing opaque, so the page's ground
      and its grain carry straight through. */
   background:

@@ -114,6 +114,20 @@
   border-color: var(--danger);
 }
 
+/* The server's verdict, not the browser's: this one survives a valid-looking
+   value the backend still rejected, such as a roll number already taken. */
+.field--bad input,
+.field--bad input:hover {
+  border-color: var(--danger);
+  background: rgba(224, 112, 90, 0.12);
+}
+
+.field__error {
+  font-size: var(--t-small);
+  letter-spacing: var(--tr-small);
+  color: var(--danger);
+}
+
 .signin__error {
   padding: var(--s3) var(--s4);
   border-radius: var(--r-control);

@@ -72,7 +72,7 @@
 }
 
 /* ── The track ────────────────────────────────────────────────────────
-   Four steps on one line, joined by the rule behind the dots. The line is
+   Five steps on one line, joined by the rule behind the dots. The line is
    drawn by each step's own ::before so it can be coloured per step — which
    is what makes the filled part stop exactly at the current one. */
 .track {
@@ -138,6 +138,19 @@
   box-shadow: 0 0 0 4px rgba(82, 164, 134, 0.22);
 }
 
+/* Off the line entirely: no dots, no progress, just the fact. */
+.track--void {
+  display: block;
+  text-align: center;
+  padding: var(--s3);
+  border-radius: var(--r-control);
+  background: var(--surface-control);
+  color: var(--ink-soft);
+  font-size: var(--t-small);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* ── Lines ────────────────────────────────────────────────────────────── */
 
 .order__lines {
@@ -182,4 +195,38 @@
   font-size: var(--t-small);
   letter-spacing: var(--tr-small);
   text-align: center;
+}
+
+/* ── Cancel ───────────────────────────────────────────────────────────
+   Quiet until it is armed. Destructive buttons that look destructive all
+   day invite the tap they are warning against, so it only turns red once
+   it is actually about to do something. */
+.order__cancel {
+  justify-self: center;
+  padding: var(--s3) var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: var(--t-small);
+  letter-spacing: var(--tr-small);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.order__cancel:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.order__cancel.is-armed {
+  color: var(--signal-late);
+  border-color: var(--signal-late);
+  background: rgba(224, 112, 90, 0.1);
+}
+
+.order__cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

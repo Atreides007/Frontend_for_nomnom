@@ -7,10 +7,18 @@
  * fixed timestamp.
  */
 
+import { ALL_STATUSES, columnFor } from '../api/shapes.js';
 import { isLate, LATE_AFTER_MS } from './time.js';
 
-/** The two stages that still need a pan. READY is cooked and on the pass. */
-const UNCOOKED = ['PLACED', 'PREPARING'];
+/**
+ * Every stage that still needs a pan. READY is cooked and sitting on the pass.
+ *
+ * Derived from columnFor rather than written out, because the backend has more
+ * states than the board draws — ACCEPTED lives in the PLACED column — and a
+ * hand-written list would quietly drop those tickets out of the pan list the
+ * day one appeared. Work out which column a status belongs to, once.
+ */
+const UNCOOKED = ALL_STATUSES.filter((s) => ['PLACED', 'PREPARING'].includes(columnFor(s)));
 
 /** Long enough for a cooked dish to sit before someone calls the number again. */
 export const UNCOLLECTED_AFTER_MS = 4 * 60 * 1000;
@@ -68,11 +76,14 @@ export function vitals(orders, now) {
   let uncollected = null; // the READY ticket that has sat longest
 
   for (const order of orders) {
-    if (order.status in counts) counts[order.status] += 1;
+    // Counted by column, so an ACCEPTED ticket shows up under New rather than
+    // vanishing from the tally while still sitting on the board.
+    const column = columnFor(order.status);
+    if (column in counts) counts[column] += 1;
 
     const waitedMs = Math.max(0, now - new Date(order.created_at).getTime());
 
-    if (order.status === 'READY') {
+    if (column === 'READY') {
       if (!uncollected || waitedMs > uncollected.waitMs) {
         uncollected = { id: order.id, waitMs: waitedMs };
       }

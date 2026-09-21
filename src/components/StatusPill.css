@@ -13,7 +13,10 @@
   white-space: nowrap;
 }
 
-.pill--placed {
+/* ACCEPTED shares PLACED's colour: the kitchen has seen it, but nothing is
+   cooking yet, so it should not read as progress on the pan. */
+.pill--placed,
+.pill--accepted {
   color: var(--signal-wait);
 }
 
@@ -29,7 +32,8 @@
   border-color: var(--signal-done);
 }
 
-.pill--collected {
+.pill--completed,
+.pill--cancelled {
   color: var(--ink-soft);
   opacity: 0.7;
 }

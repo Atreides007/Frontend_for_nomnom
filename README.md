@@ -17,7 +17,8 @@ Open http://localhost:5173.
 
 The app ships with a fake backend switched on, so it runs with nothing else
 installed. Demo sign-ins: `student/student`, `kitchen/kitchen`,
-`manager/manager`.
+`manager/manager`. The demo student holds roll number `21CS001`, so registering
+with that number shows the inline duplicate-field error.
 
 ## Build it
 
@@ -42,48 +43,121 @@ only ever talks to one origin, so there is no CORS setup to do.
 ## What the backend has to provide
 
 Shapes and every call are documented in **`src/api/shapes.js`** — that file is
-the contract. Summary:
+the contract, and both clients are written against it. Summary:
 
 | Call | Method + path | Returns |
 | --- | --- | --- |
-| `login(username, password)` | `POST /api/auth/login/` | `user` |
-| `register(username, password)` | `POST /api/auth/register/` | `user` |
-| `getMe()` | `GET /api/auth/me/` | `user`, or `null` when signed out |
+| `login(username, password)` | `POST /api/auth/login/` | `user` (token kept internally) |
+| `register(details)` | `POST /api/auth/register/` | `user` |
+| `getMe()` | — | `user`, or `null` when signed out |
 | `logout()` | `POST /api/auth/logout/` | — |
-| `getMenu()` | `GET /api/menu/` | `menuItem[]` |
-| `placeOrder(items)` | `POST /api/orders/` | the created `order` |
-| `getOrders()` | `GET /api/orders/` | student: own orders, newest first<br>staff/manager: all orders not yet `COLLECTED` |
+| `getMenu()` | `GET /api/menu/items/` | `menuItem[]` |
+| `placeOrder(items, opts)` | `POST /api/orders/` | the created `order` |
+| `getOrders()` | `GET /api/orders/` | student: own orders, newest first<br>staff/manager: `?status=PLACED,ACCEPTED,PREPARING` |
 | `getOrder(id)` | `GET /api/orders/{id}/` | `order` |
 | `setStatus(id, status)` | `PATCH /api/orders/{id}/status/` | the updated `order` |
+| `cancelOrder(id)` | `DELETE /api/orders/{id}/` | the cancelled `order` |
+
+`register` takes `{ username, password, roll_number, email, phone_number }`.
+`placeOrder` takes `items: [{ id, qty }]` plus
+`{ counterId, idempotencyKey }` — see the notes below.
+
+`getMe()` makes no request. The token and the user are kept in `sessionStorage`
+together, so a refresh restores the session without a round trip.
+
+### The shapes the pages are written against
 
 ```js
-menuItem = { id, name, description, price, category, available }
-order    = { id, status, total, created_at, items: [{ name, qty, price }] }
+menuItem = { id, name, description, price, category, available, image, counter }
+order    = { id, status, total, created_at, counter, items: [{ name, qty, price }] }
 user     = { id, username, role }          // "student" | "staff" | "manager"
 
 // status, exact strings, in the order an order moves through them:
-PLACED → PREPARING → READY → COLLECTED
+PLACED → ACCEPTED → PREPARING → READY → COMPLETED
+// and off the line, from PLACED or ACCEPTED only:
+CANCELLED
 ```
 
-Notes for whoever builds the API:
+These are **not** what Django sends. `real.js` translates — `toMenuItem`,
+`toOrder`, `toOrderItem`, `unwrap` and `httpError` are the whole of it, each
+exported and each covered by tests in `real.test.js`. The pages never see a
+Django field name. What the translation absorbs:
 
-- `price` and `total` are plain numbers in rupees, not strings and not paise.
+- **Prices arrive as strings.** Django serialises `DecimalField` as `"80.00"`
+  so it never loses a paisa to a float. `"80.00" + 20` is `"80.0020"`, which
+  would put a wrong number on a bill, so every price and total is coerced once
+  on the way in and is a number everywhere after that.
+- **Lists may be paginated.** DRF sends `{ count, next, results }` when
+  pagination is on and a bare array when it is not. `unwrap` reads either, so
+  turning pagination on later does not break the app.
+- **Errors come in four shapes.** `detail`, `error`, `message`, or serializer
+  errors like `{ roll_number: ["already exists"] }`. `httpError` finds the
+  message wherever it is and also lifts out `field` (which input to blame) and
+  `item_id` (which cart row ran out).
+- **`category` and `counter` are objects, `category` renders as a string.**
+- **`is_orderable` beats `is_available`** when both are present — a dish that
+  is on the menu but out of stock is not orderable.
+
+### Notes for whoever builds the API
+
 - `order.items` stores the **name and price as they were when the order was
   placed**. Changing a menu price must not change what an old order says.
 - `order.id` is a small integer. It is shown to students and called out at the
   counter as a token number (`#042`), so it needs to stay short.
-- `placeOrder` takes `{ items: [{ id, qty }] }` where `id` is a `menuItem.id`.
-  The server computes the total; the client never sends one.
+- The server computes the total; the client never sends one.
+- **`placeOrder` sends an `idempotency_key`.** It is minted when the cart is
+  created and reused unchanged on every retry of the same basket. If a request
+  quietly succeeds and the reply is lost — flaky campus wifi, exactly the
+  demo conditions — the retry must return the **original order** rather than
+  cook everything twice. The key lives in the cart context, not the Cart page,
+  so navigating back to the menu does not reset it.
+- **An out-of-stock `409` must name the dish.** The cart tints that one row
+  and leaves the rest of the basket alone; without an id the student has to
+  rebuild five lines because the samosas went. `httpError` reads `item_id`.
 - `setStatus` only ever moves an order **one step forward**. Anything else
   should be a `409` — it stops a double-tap on the kitchen display from
   skipping a state.
-- Errors return JSON with a `detail` (or `error`) field holding a message that
-  is safe to show a user as-is.
+- `cancelOrder` is a `DELETE`, and a `204` is fine: the client re-reads the
+  order when the response has no body. It is refused for anything past
+  `ACCEPTED`, and the client checks first so the button disappears rather than
+  failing on tap.
 - Auth is **token auth**. `login` and `register` must return the user *and* a
-  token — `{ id, username, role, token }`, or `{ key, user }`; `real.js` reads
-  either. Every later request carries `Authorization: Token <token>`, including
-  GETs. No cookies and no CSRF header. Moving to JWT means changing the word
-  `Token` to `Bearer` in `authHeaders` in `src/api/real.js`, and nothing else.
+  token — `{ token, role, user_id }`, or dj-rest-auth's `{ key, user }`;
+  `real.js` reads either, and rebuilds the username from what was typed when
+  the response omits it. Every later request carries
+  `Authorization: Token <token>`, including GETs. No cookies and no CSRF
+  header. Moving to JWT means changing the word `Token` to `Bearer` in
+  `authHeaders` in `src/api/real.js`, and nothing else.
+
+### Still open with the backend team
+
+Each of these is guessed at defensively — the code handles every plausible
+answer — but a straight answer would let a branch be deleted:
+
+1. Is `menu_item` on an order line a nested object, a name string, or a bare
+   id? All three are handled; all three would otherwise render
+   `[object Object]` on a receipt.
+2. Are the list endpoints DRF-paginated, or bare arrays?
+3. Exact body of the out-of-stock `409` — which key carries the failing item's
+   id?
+4. On a menu item, is the field `counter` (object) or `counter_id` (int)?
+5. Is `image` an absolute or a relative URL? An absolute
+   `http://localhost:8000/...` works on the dev machine and breaks the moment
+   the demo is opened on a phone.
+6. `roll_number` is described as optional server-side but also wants a
+   duplicate-value error — an optional field cannot usefully carry a unique
+   constraint. The form currently requires it.
+
+### The ACCEPTED fold
+
+The backend has five forward states; the kitchen board draws three columns.
+`ACCEPTED` means the kitchen has the ticket but nothing is in a pan yet, which
+to the person at the pass is the same pile of work as `PLACED` — so
+`columnFor()` in `shapes.js` folds it into the `PLACED` column, and the board's
+filter, its tab counts, its chips and the "still to cook" tally all read from
+that one function rather than from the raw status. The student's timeline still
+shows all five steps, because a student does want to know the kitchen has seen
+the order.
 
 ## Routes and roles
 
@@ -209,7 +283,11 @@ different machine.
 
 The mock backend makes no network requests, and the font is bundled with the
 app (`@fontsource-variable/inter`) rather than loaded from Google. Dish photos
-are local WebP files. To confirm the built app talks to nothing outside itself:
+are local WebP files, looked up **by dish name** rather than by id — ids belong
+to whichever database is answering, and keying photos by id meant every picture
+moved the day the app pointed at the real backend. A photo the backend sends
+(`item.image`) wins over the local file; a dish with neither gets a grey tile.
+To confirm the built app talks to nothing outside itself:
 `npm run build`, then `grep -r "https\?://" dist/assets/`.
 
 ## Demo switches
@@ -221,4 +299,8 @@ are local WebP files. To confirm the built app talks to nothing outside itself:
   fail about half of all refreshes. There is no network to unplug with an
   in-memory backend, so this is how the "connection lost" banner and the
   keep-the-last-data behaviour are demonstrated.
-- `npm test` runs the unit tests (`node --test`, no framework).
+- `npm test` runs the unit tests (`node --test`, no framework, no dependencies).
+  56 of them, covering the money maths, the arc geometry, the late-order clock,
+  the kitchen's column folding, and every translation `real.js` performs on a
+  Django response — which is where a wrong assumption about the backend would
+  otherwise surface as a wrong number on a bill.

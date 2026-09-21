@@ -146,7 +146,7 @@ export default function Menu() {
 }
 
 function Item({ item, qty, onChange }) {
-  const photo = photoFor(item.id);
+  const photo = photoFor(item);
 
   return (
     <article className={`item panel${item.available ? '' : ' item--out'}`}>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { photoFor } from '../assets/photos';
+import { PLACEHOLDER, photoFor } from '../assets/photos';
 import { arcAt } from '../lib/arc';
 import { rupees } from '../lib/money';
 import Stepper from './Stepper';
@@ -185,7 +185,15 @@ export default function ArcPicker({ items, title, qtyOf, onChange }) {
             aria-label={`Show ${item.name}, ${rupees(item.price)}`}
             onClick={(event) => aimRef.current(event.currentTarget)}
           >
-            <img className="arc__photo" src={photoFor(item.id)} alt="" width="132" height="132" />
+            {/* Every slot is the same size whether or not there is a photo,
+                otherwise the arc maths would be measuring a ragged rail. */}
+            <img
+              className="arc__photo"
+              src={photoFor(item) ?? PLACEHOLDER}
+              alt=""
+              width="132"
+              height="132"
+            />
           </button>
         ))}
       </div>
