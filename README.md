@@ -87,9 +87,9 @@ Django field name. What the translation absorbs:
   so it never loses a paisa to a float. `"80.00" + 20` is `"80.0020"`, which
   would put a wrong number on a bill, so every price and total is coerced once
   on the way in and is a number everywhere after that.
-- **Lists may be paginated.** DRF sends `{ count, next, results }` when
-  pagination is on and a bare array when it is not. `unwrap` reads either, so
-  turning pagination on later does not break the app.
+- **Lists are bare arrays today.** DRF would send `{ count, next, results }`
+  if pagination were switched on; it is not. `unwrap` reads either, so turning
+  it on later does not break the app.
 - **Errors come in four shapes.** `detail`, `error`, `message`, or serializer
   errors like `{ roll_number: ["already exists"] }`. `httpError` finds the
   message wherever it is and also lifts out `field` (which input to blame) and
@@ -111,9 +111,11 @@ Django field name. What the translation absorbs:
   demo conditions — the retry must return the **original order** rather than
   cook everything twice. The key lives in the cart context, not the Cart page,
   so navigating back to the menu does not reset it.
-- **An out-of-stock `409` must name the dish.** The cart tints that one row
-  and leaves the rest of the basket alone; without an id the student has to
-  rebuild five lines because the samosas went. `httpError` reads `item_id`.
+- **The out-of-stock `400` names the dish.** The cart tints that one row and
+  leaves the rest of the basket alone; without an id the student has to rebuild
+  five lines because the samosas went. `httpError` reads `item_id` — and only
+  `item_id`, since the status code is an ordinary 400 shared with validation
+  errors.
 - `setStatus` only ever moves an order **one step forward**. Anything else
   should be a `409` — it stops a double-tap on the kitchen display from
   skipping a state.
@@ -129,24 +131,37 @@ Django field name. What the translation absorbs:
   header. Moving to JWT means changing the word `Token` to `Bearer` in
   `authHeaders` in `src/api/real.js`, and nothing else.
 
-### Still open with the backend team
+### Answered by the backend team
 
-Each of these is guessed at defensively — the code handles every plausible
-answer — but a straight answer would let a branch be deleted:
+These were the six ambiguities in the spec. All six were checked against the
+Django source and answered, so the guessing branches are gone:
 
-1. Is `menu_item` on an order line a nested object, a name string, or a bare
-   id? All three are handled; all three would otherwise render
-   `[object Object]` on a receipt.
-2. Are the list endpoints DRF-paginated, or bare arrays?
-3. Exact body of the out-of-stock `409` — which key carries the failing item's
-   id?
-4. On a menu item, is the field `counter` (object) or `counter_id` (int)?
-5. Is `image` an absolute or a relative URL? An absolute
-   `http://localhost:8000/...` works on the dev machine and breaks the moment
-   the demo is opened on a phone.
-6. `roll_number` is described as optional server-side but also wants a
-   duplicate-value error — an optional field cannot usefully carry a unique
-   constraint. The form currently requires it.
+1. **`menu_item` on an order line is a plain dish name.** The serializer
+   declares it `CharField(source='menu_item.name', read_only=True)`, so the id
+   is not on the line at all. `toOrderItem` reads the string directly.
+2. **Nothing is paginated.** No `DEFAULT_PAGINATION_CLASS`, no per-view
+   `pagination_class`; every list is a bare JSON array. `unwrap` is kept as a
+   one-line safety net for the day someone adds a `page_size` setting.
+3. **Out of stock is `400`, not `409`,** with
+   `{ error: 'insufficient_stock', detail, item_id }`. The failing item's id is
+   under `item_id`. Nothing in the app keys off the status code for this —
+   `item_id` being present is the whole signal — because a 400 is also what a
+   plain validation failure returns.
+4. **`counter_id` going in, `counter` coming back.** The create view reads
+   `request.data.get("counter_id")` (an int); every response carries a nested
+   `{ id, name }` under `counter`. This asymmetry is the one place a plausible
+   guess fails silently: posting `counter` still returns `201`, and the order is
+   filed against no counter. Pinned by a test in `real.test.js`.
+5. **`image` is absolute** — DRF builds it with `request.build_absolute_uri()`,
+   so it arrives as `http://host:8000/media/...`. Note for deployment: that host
+   comes from the request's `Host` header, so a reverse proxy needs
+   `USE_X_FORWARDED_HOST` set or the photos will point at the wrong machine.
+6. **`roll_number` optional and unique is fine**, because Postgres treats
+   multiple `NULL`s as distinct, and `RegisterView` skips the duplicate check
+   when the value is empty. The backend team flagged that the register form only
+   collected username and password, leaving every roll number `NULL` — that is
+   already fixed here: the form collects roll number, email and phone, and marks
+   whichever field the server names.
 
 ### The ACCEPTED fold
 

@@ -219,7 +219,10 @@ export async function placeOrder(items, { counterId, idempotencyKey } = {}) {
     const item = MENU.find((m) => m.id === id);
     if (!item) return fail('Something in your cart is no longer on the menu.', 400, { itemId: id });
     if (!item.available) {
-      return fail(`${item.name} just went off the menu.`, 409, { itemId: id });
+      // 400, matching the real backend's insufficient_stock — not 409. The
+      // mock is the thing people learn the contract from, so it lies about
+      // nothing, least of all a status code.
+      return fail(`${item.name} just went off the menu.`, 400, { itemId: id });
     }
     if (!Number.isInteger(qty) || qty < 1) return fail('Quantities must be whole numbers of at least 1.');
     lines.push({ name: item.name, qty, price: item.price });

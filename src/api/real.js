@@ -116,13 +116,14 @@ export function httpError(payload, status) {
   error.status = status;
   // Which form field to point at, when the backend says.
   if (payload && typeof payload === 'object') {
-    const field = Object.keys(payload).find((k) => !['detail', 'error', 'message'].includes(k));
+    const field = Object.keys(payload).find(
+      (k) => !['detail', 'error', 'message', 'error_code', 'item_id'].includes(k),
+    );
     if (field) error.field = field;
-    // Which cart row went out of stock. The spec promises the response says
-    // which item failed but not under what name, so we look for the obvious
-    // candidates rather than pick one and be silently wrong.
-    const itemId = payload.item_id ?? payload.menu_item ?? payload.menu_item_id;
-    if (typeof itemId === 'number') error.itemId = itemId;
+    // Which cart row went out of stock. This arrives as a 400, NOT a 409 —
+    // `{ error: 'insufficient_stock', detail, item_id }` — so nothing may key
+    // off the status code here; item_id being present is the whole signal.
+    if (typeof payload.item_id === 'number') error.itemId = payload.item_id;
   }
   return error;
 }
@@ -171,26 +172,19 @@ export function toMenuItem(raw) {
 }
 
 /**
- * One line of an order.
+ * One line of an order: { menu_item: "Veg Thali", quantity: 2, unit_price: "70.00" }.
  *
- * `menu_item` is the field the backend team named but did not pin down: it may
- * be a nested object, a plain name, or a bare id. All three are handled,
- * because the failure mode of guessing wrong is a receipt that reads
- * "[object Object]" and nobody noticing until the viva.
- * ponytail: a bare id has no name to show, so it degrades to "Item #12"
- * rather than blank — replace with a real lookup if the backend keeps sending ids.
+ * `menu_item` is the dish NAME, not an object and not an id — the serializer
+ * declares it `CharField(source='menu_item.name', read_only=True)`, so the id
+ * never comes back on an order line at all. That is why the cart's
+ * out-of-stock error has to carry `item_id` separately: there is no id here to
+ * match a row against.
  */
 export function toOrderItem(raw) {
-  const source = raw.menu_item ?? raw.item ?? raw;
-  const name =
-    typeof source === 'string'
-      ? source
-      : (source?.name ?? raw.name ?? (typeof source === 'number' ? `Item #${source}` : 'Item'));
-
   return {
-    name,
+    name: raw.menu_item ?? raw.name ?? 'Item',
     qty: raw.quantity ?? raw.qty ?? 1,
-    price: money(raw.unit_price ?? raw.price ?? source?.price),
+    price: money(raw.unit_price ?? raw.price),
   };
 }
 
@@ -309,7 +303,10 @@ export const placeOrder = (items, { counterId, idempotencyKey } = {}) =>
   request('/orders/', {
     method: 'POST',
     body: {
-      counter: counterId,
+      // counter_id on the way in, `counter` on the way back out as a nested
+      // { id, name } — the backend is deliberately asymmetric here, so the
+      // write key and the read key are genuinely different names.
+      counter_id: counterId,
       idempotency_key: idempotencyKey,
       items: items.map(({ id, qty }) => ({ menu_item: id, quantity: qty })),
     },

@@ -10,7 +10,8 @@ globalThis.sessionStorage = {
   removeItem: (k) => store.delete(k),
 };
 
-const { adopt, httpError, toMenuItem, toOrder, toOrderItem, unwrap } = await import('./real.js');
+const { adopt, httpError, placeOrder, toMenuItem, toOrder, toOrderItem, unwrap } =
+  await import('./real.js');
 
 const TOKEN_KEY = 'canteen.token';
 const USER_KEY = 'canteen.user';
@@ -95,7 +96,7 @@ test('a Django order becomes the shape the receipt is written against', () => {
     total_amount: '145.50',
     created_at: '2026-09-21T10:24:05Z',
     counter: { id: 1, name: 'Main Kitchen' },
-    items: [{ menu_item: { id: 1, name: 'Masala Dosa' }, quantity: 2, unit_price: '60.00' }],
+    items: [{ menu_item: 'Masala Dosa', quantity: 2, unit_price: '60.00' }],
   });
 
   assert.equal(order.total, 145.5);
@@ -103,18 +104,18 @@ test('a Django order becomes the shape the receipt is written against', () => {
   assert.deepEqual(order.counter, { id: 1, name: 'Main Kitchen' });
 });
 
-test('menu_item is handled whichever of the three shapes it turns out to be', () => {
-  // The backend team named this field but never pinned its type down. Getting
-  // it wrong renders "[object Object]" on a receipt, so all three are covered.
-  assert.equal(toOrderItem({ menu_item: { name: 'Samosa' }, quantity: 1 }).name, 'Samosa');
-  assert.equal(toOrderItem({ menu_item: 'Samosa', quantity: 1 }).name, 'Samosa');
-  assert.equal(toOrderItem({ menu_item: 21, quantity: 1 }).name, 'Item #21');
+test('an order line is a dish name and a string price, as the serializer sends it', () => {
+  // Confirmed against OrderItemSerializer: menu_item is
+  // CharField(source='menu_item.name', read_only=True) — a name, never an
+  // object and never an id.
+  const line = toOrderItem({ menu_item: 'Veg Thali', quantity: 2, unit_price: '70.00' });
+  assert.deepEqual(line, { name: 'Veg Thali', qty: 2, price: 70 });
 });
 
-test('no order line ever renders as [object Object]', () => {
-  for (const raw of [{}, { menu_item: null }, { menu_item: {} }, { menu_item: 5 }]) {
+test('a line with nothing usable still renders as text, not undefined', () => {
+  for (const raw of [{}, { menu_item: null }]) {
     assert.equal(typeof toOrderItem(raw).name, 'string');
-    assert.doesNotMatch(toOrderItem(raw).name, /object Object/);
+    assert.equal(toOrderItem(raw).qty, 1);
   }
 });
 
@@ -133,11 +134,44 @@ test('a DRF serializer error surfaces the message and the field to blame', () =>
 });
 
 test('a stock failure names the cart row so the basket need not be thrown away', () => {
-  const error = httpError({ detail: 'Samosa is out of stock.', item_id: 21 }, 409);
+  // The real body, verbatim from the view: a 400, not a 409.
+  const error = httpError(
+    { error: 'insufficient_stock', detail: 'Samosa is out of stock.', item_id: 21 },
+    400,
+  );
   assert.equal(error.message, 'Samosa is out of stock.');
   assert.equal(error.itemId, 21);
+  // item_id is a cart row, not a form input — it must never be mistaken for
+  // a field to paint red on the register form.
+  assert.equal(error.field, undefined);
 });
 
 test('an unreadable error body still yields something safe to show a student', () => {
   assert.equal(httpError(null, 500).message, 'Something went wrong. Try again.');
+});
+
+// ── what actually goes on the wire ────────────────────────────────────────
+
+test('placeOrder sends counter_id, not counter', () => {
+  // The one asymmetry in the whole API: the backend WRITES counter_id and
+  // READS back a nested counter object. Sending `counter` is accepted with a
+  // 201 and silently files the order against no counter at all, which is why
+  // this is pinned by a test rather than trusted to a comment.
+  let sent;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    sent = JSON.parse(options.body);
+    return { ok: true, status: 201, json: async () => ({ id: 1, items: [] }) };
+  };
+
+  return placeOrder([{ id: 4, qty: 2 }], { counterId: 3, idempotencyKey: 'k1' })
+    .then(() => {
+      assert.equal(sent.counter_id, 3);
+      assert.equal(sent.counter, undefined);
+      assert.equal(sent.idempotency_key, 'k1');
+      assert.deepEqual(sent.items, [{ menu_item: 4, quantity: 2 }]);
+    })
+    .finally(() => {
+      globalThis.fetch = realFetch;
+    });
 });
